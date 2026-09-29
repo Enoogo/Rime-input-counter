@@ -1,0 +1,24 @@
+# ===== 个人统计数据（绝不入库） =====
+input_count.txt
+input_count_raw.txt
+input_count_raw.tmp
+
+# ===== 图表输出（含真实数据与本机路径） =====
+input_count_chart.html
+demo_chart.html
+
+# ===== 一次性报告 / 备份 =====
+SETUP_RESULT.txt
+FINALIZE_RESULT.txt
+REDEPLOY_RESULT.txt
+*.bak
+
+# ===== Python =====
+__pycache__/
+*.pyc
+
+# ===== 编辑器 / 系统 =====
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
