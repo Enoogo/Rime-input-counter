@@ -1,0 +1,22 @@
+patch:
+  # 输入统计：ramonmi/Rime-input-count（lua/input_count.lua）
+  # 引擎翻译器完整列表（与原方案一致）+ 输入统计 lua 翻译器
+  engine/translators:
+    - punct_translator
+    - "table_translator@custom_phrase"
+    - reverse_lookup_translator
+    - script_translator
+    - "lua_translator@*input_count"
+  "switches":
+    - name: ascii_mode
+      reset: 0
+      states: ["中文", "西文"]
+    - name: full_shape
+      states: ["半角", "全角"]
+    - name: zh_simp
+      reset: 1
+      states: ["漢字", "汉字"]
+    - name: ascii_punct
+      states: ["。，", "．，"]
+  simplifier:
+    option_name: zh_simp
