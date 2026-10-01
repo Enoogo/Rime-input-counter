@@ -20,6 +20,18 @@ function Fmt($n) {
   try { return ('{0:N0}' -f [math]::Floor([double]$n)) } catch { return [string]$n }
 }
 
+function Fmt1($x) {
+  # 保留 1 位小数、千分位（去零平均线的数值标注）
+  try { return ('{0:N1}' -f [double]$x) } catch { return [string]$x }
+}
+
+function Avg-NonZero($vals) {
+  # 去零平均：剔除 0 值后求平均（无非零值返回 0）
+  $nz = @($vals | Where-Object { $_ -gt 0 })
+  if ($nz.Count -eq 0) { return 0.0 }
+  return ($nz | Measure-Object -Average).Average
+}
+
 function NiceMax($value) {
   $v = 0.0
   try { $v = [double]$value } catch { return 10 }
@@ -137,7 +149,7 @@ function Text-W([string]$s) {
   return $w
 }
 
-function Build-Svg($items, [switch]$withDates) {
+function Build-Svg($items, [switch]$withDates, [switch]$withAvg) {
   $n = $items.Count
   $width = 1000; $height = 430
   $ml = 78; $mr = 78; $mt = 58; $mb = 64
@@ -203,6 +215,22 @@ function Build-Svg($items, [switch]$withDates) {
     $yw = $mt + $ph * (1.0 - [double]$items[$i].W / [double]$wmax)
     $out.Add(('<circle cx="{0:F1}" cy="{1:F1}" r="3.2" fill="{2}"/>' -f $x, $yk, $COLOR_KEYS))
     $out.Add(('<circle cx="{0:F1}" cy="{1:F1}" r="3.2" fill="{2}"/>' -f $x, $yw, $COLOR_WORDS))
+  }
+
+  # 去零平均线（字=蓝虚线、键=橙虚线，默认 display:none，由勾选框显示/隐藏）
+  if ($withAvg -and $n -gt 0) {
+    $avgW = Avg-NonZero @($items | ForEach-Object { [double]$_.W })
+    if ($avgW -gt 0) {
+      $y = $mt + $ph * (1.0 - $avgW / [double]$wmax)
+      $out.Add(('<line class="avgline" style="display:none" x1="{0}" y1="{1:F1}" x2="{2}" y2="{1:F1}" stroke="{3}" stroke-width="1.5" stroke-dasharray="3 3"/>' -f $ml, $y, ($ml + $pw), $COLOR_WORDS))
+      $out.Add(('<text class="avglab avgline" style="display:none" x="{0}" y="{1:F1}" fill="{2}">字去零平均 {3}</text>' -f ($ml + 8), ($y - 4), $COLOR_WORDS, (Fmt1 $avgW)))
+    }
+    $avgK = Avg-NonZero @($items | ForEach-Object { [double]$_.K })
+    if ($avgK -gt 0) {
+      $y = $mt + $ph * (1.0 - $avgK / [double]$kmax)
+      $out.Add(('<line class="avgline" style="display:none" x1="{0}" y1="{1:F1}" x2="{2}" y2="{1:F1}" stroke="{3}" stroke-width="1.5" stroke-dasharray="3 3"/>' -f $ml, $y, ($ml + $pw), $COLOR_KEYS))
+      $out.Add(('<text class="avglab avgline" style="display:none" x="{0}" y="{1:F1}" fill="{2}">键去零平均 {3}</text>' -f ($ml + 8), ($y - 4), $COLOR_KEYS, (Fmt1 $avgK)))
+    }
   }
 
   # hover hit areas (transparent, carry data for the JS tooltip)
@@ -308,6 +336,10 @@ circle.hit { fill: rgba(0,0,0,0); pointer-events: all; cursor: pointer; }
   box-shadow: 0 1px 3px rgba(0,0,0,0.10); }
 #minsvg, #dagsvg { display: block; }
 .scroll-hint { color: #9ca3af; font-size: 12px; margin-top: 6px; }
+.chk { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #374151;
+  margin-top: 8px; cursor: pointer; user-select: none; }
+.chk input { width: 15px; height: 15px; accent-color: #2563eb; cursor: pointer; }
+.avglab { font-size: 10px; }
 .tooltip { position: fixed; z-index: 100; display: none; background: #1f2937; color: #f9fafb;
   padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.7;
   box-shadow: 0 6px 20px rgba(0,0,0,0.28); pointer-events: none; white-space: nowrap; }
@@ -351,6 +383,14 @@ $CHART_JS = @'
 
   function pad(n){ return (n < 10 ? '0' : '') + n; }
   function fmtN(n){ return Number(n).toLocaleString(); }
+  function fmt1(x){ return Number(x).toLocaleString(undefined, {maximumFractionDigits: 1}); }
+  function chkOn(id){ var c = document.getElementById(id); return !!(c && c.checked); }
+  // 去零平均：上屏字数、按键次数各自剔除 0 值后求平均（无非零值返回 0）
+  function avgNZ(pts, idx){
+    var s = 0, c = 0;
+    for (var ai = 0; ai < pts.length; ai++){ if (pts[ai][idx] > 0){ s += pts[ai][idx]; c++; } }
+    return c ? s / c : 0;
+  }
   function niceMax(v){ v = +v; if (v <= 0) return 10;
     var e = Math.floor(Math.log(v) / Math.LN10); var base = Math.pow(10, e);
     var m = [1,2,5,10];
@@ -458,14 +498,28 @@ $CHART_JS = @'
       var dn2 = Math.floor(b2 / perDay), slot2 = b2 - dn2 * perDay;
       pts.push([new Date(dayStartMs(dn2) + slot2 * bms), v[0], v[1]]);
     }
+    // 「删去0值」勾选框：勾选后不绘制 0 值点（字、键均为 0 的点），
+    // 只把不为 0 的数据按时间顺序绘制出来，横轴时刻刻度/日期标注随之只标剩余的点。
+    var dz = chkOn('minDropZero');
+    if (dz){
+      var fz = [];
+      for (i = 0; i < pts.length; i++){
+        if (pts[i][1] !== 0 || pts[i][2] !== 0) fz.push(pts[i]);
+      }
+      pts = fz;
+    }
+    if (!pts.length){ svg.innerHTML = ''; MIN_PTS = null; updateDateFix(); return; }
     var n = pts.length;
     var SP = 9, H = 430, ml = 78, mr = 78, mt = 58, mb = 64;
     // 宽度至少填满滚动容器可见区，保证左右固定纵轴贴着图表两侧
     var cw = (svg.parentNode && svg.parentNode.clientWidth) ? svg.parentNode.clientWidth : 0;
     var W = Math.max(n * SP + ml + mr, cw, 360);
     var pw = W - ml - mr, ph = H - mt - mb;
-    var mw = 0, mk = 0;
-    for (i = 0; i < n; i++){ if (pts[i][1] > mw) mw = pts[i][1]; if (pts[i][2] > mk) mk = pts[i][2]; }
+    var mw = 0, mk = 0, iw = 0, ik = 0;
+    for (i = 0; i < n; i++){
+      if (pts[i][1] > mw){ mw = pts[i][1]; iw = i; }
+      if (pts[i][2] > mk){ mk = pts[i][2]; ik = i; }
+    }
     var wmax = niceMax(mw), kmax = niceMax(mk);
     function X(j){ return ml + (n <= 1 ? pw * 0.5 : pw * j / (n - 1)); }
     function Y(v, vm){ return mt + ph * (1 - v / vm); }
@@ -486,11 +540,16 @@ $CHART_JS = @'
     s.push('<line x1="'+ml+'" y1="'+(mt+ph)+'" x2="'+(ml+pw)+'" y2="'+(mt+ph)+'" stroke="#9ca3af" stroke-width="1.2"/>');
     // day separators + date labels: date drawn directly under each day's 0:00 point
     // (= the date of the data to the right of that point)
-    var bidx = {};
+    var bidx = {}, lastDay = '';
     for (i = 0; i < n; i++){
       var dd = pts[i][0];
-      if (dd.getHours() === 0 && dd.getMinutes() === 0){
-        var x3 = X(i), ds3 = fDate(dd);
+      var ds3 = fDate(dd);
+      // 正常：日期标在每天 0:00 的点正下方；「删去0值」勾选后 0 点可能被删，
+      // 改为标在每天第一个剩下的数据点正下方（横轴标注随删 0 后的数据自动跟随）
+      var mark = dz ? (ds3 !== lastDay) : (dd.getHours() === 0 && dd.getMinutes() === 0);
+      lastDay = ds3;
+      if (mark){
+        var x3 = X(i);
         s.push('<line x1="'+x3.toFixed(1)+'" y1="'+mt+'" x2="'+x3.toFixed(1)+'" y2="'+(mt+ph)+'" stroke="#d1d5db" stroke-width="1" stroke-dasharray="3 4"/>');
         s.push('<text x="'+x3.toFixed(1)+'" y="'+(mt+ph+42)+'" class="xl xd" text-anchor="middle">'+ds3+'</text>');
         bidx[ds3] = i;
@@ -499,7 +558,10 @@ $CHART_JS = @'
     // time ticks: stride from measured label width vs point spacing -> never overlaps
     var dxp = (n > 1) ? pw / (n - 1) : pw;
     var labW = Math.max(textW('00:00'), textW('12:34'), textW('23:59'));
-    var stride = pickStride(Math.max(1, Math.ceil((labW + 12) / dxp)), bm);
+    // 删 0 后点的时间不再等间隔，时刻标注直接按屏幕空间取步长（标注取自各点真实时间）
+    var stride = dz
+      ? Math.max(1, Math.ceil((labW + 12) / (dxp || 1)))
+      : pickStride(Math.max(1, Math.ceil((labW + 12) / dxp)), bm);
     if (stride > n) stride = n;
     for (i = 0; i < n; i += stride){
       s.push('<text x="'+X(i).toFixed(1)+'" y="'+(mt+ph+22)+'" class="xl" text-anchor="middle">'+fLabel(pts[i][0])+'</text>');
@@ -513,6 +575,20 @@ $CHART_JS = @'
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][2], kmax).toFixed(1)+'" r="3.2" fill="#f59e0b"/>');
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][1], wmax).toFixed(1)+'" r="3.2" fill="#2563eb"/>');
     }
+    // 去零平均线（勾选后显示）：字=蓝虚线（左轴高度）、键=橙虚线（右轴高度）
+    if (chkOn('mAvgChk')){
+      var wav = avgNZ(pts, 1), kav = avgNZ(pts, 2);
+      if (wav > 0){
+        var ywa = Y(wav, wmax);
+        s.push('<line x1="'+ml+'" y1="'+ywa.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+ywa.toFixed(1)+'" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(ywa-4).toFixed(1)+'" class="avglab" fill="#2563eb">字去零平均 '+fmt1(wav)+'</text>');
+      }
+      if (kav > 0){
+        var yka = Y(kav, kmax);
+        s.push('<line x1="'+ml+'" y1="'+yka.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+yka.toFixed(1)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(yka-4).toFixed(1)+'" class="avglab" fill="#f59e0b">键去零平均 '+fmt1(kav)+'</text>');
+      }
+    }
     for (i = 0; i < n; i++){
       var x2 = X(i);
       var at = 'data-label="'+fTip(pts[i][0])+'" data-w="'+fmtN(pts[i][1])+'" data-k="'+fmtN(pts[i][2])+'"';
@@ -524,7 +600,8 @@ $CHART_JS = @'
     svg.style.width = W + 'px'; svg.style.height = H + 'px';
     svg.innerHTML = s.join('');
     var lbl = document.getElementById('minDensityLabel');
-    if (lbl) lbl.textContent = ('每点 ' + bm + ' 分钟 · 共 ' + n + ' 点 · 默认显示最右侧（最近数据）');
+    if (lbl) lbl.textContent = ('每点 ' + bm + ' 分钟 · 共 ' + n + ' 点 · 最高'
+      + fmtN(mw) + '字（' + fTip(pts[iw][0]) + '），' + fmtN(mk) + '键（' + fTip(pts[ik][0]) + '）');
     // state for the fixed bottom-left date badge while scrolling
     MIN_N = n; MIN_DX = dxp; MIN_X0 = ml; MIN_PWD = pw; MIN_PTS = pts; MIN_BIDX = bidx;
     // 每次重绘（含切换 1 分钟/…/1440 分钟组距）后都回到最右侧
@@ -576,8 +653,11 @@ $CHART_JS = @'
     var cw = (svg.parentNode && svg.parentNode.clientWidth) ? svg.parentNode.clientWidth : 0;
     var W = Math.max(n * SP + ml + mr, cw, 360);
     var pw = W - ml - mr, ph = H - mt - mb;
-    var mw = 0, mk = 0;
-    for (i = 0; i < n; i++){ if (pts[i][1] > mw) mw = pts[i][1]; if (pts[i][2] > mk) mk = pts[i][2]; }
+    var mw = 0, mk = 0, iw = 0, ik = 0;
+    for (i = 0; i < n; i++){
+      if (pts[i][1] > mw){ mw = pts[i][1]; iw = i; }
+      if (pts[i][2] > mk){ mk = pts[i][2]; ik = i; }
+    }
     var wmax = niceMax(mw), kmax = niceMax(mk);
     function X(j){ return ml + (n <= 1 ? pw * 0.5 : pw * j / (n - 1)); }
     function Y(v, vm){ return mt + ph * (1 - v / vm); }
@@ -613,6 +693,20 @@ $CHART_JS = @'
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][2], kmax).toFixed(1)+'" r="3.2" fill="#f59e0b"/>');
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][1], wmax).toFixed(1)+'" r="3.2" fill="#2563eb"/>');
     }
+    // 去零平均线（勾选后显示）：字=蓝虚线（左轴高度）、键=橙虚线（右轴高度）
+    if (chkOn('dAvgChk')){
+      var wav = avgNZ(pts, 1), kav = avgNZ(pts, 2);
+      if (wav > 0){
+        var ywa = Y(wav, wmax);
+        s.push('<line x1="'+ml+'" y1="'+ywa.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+ywa.toFixed(1)+'" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(ywa-4).toFixed(1)+'" class="avglab" fill="#2563eb">字去零平均 '+fmt1(wav)+'</text>');
+      }
+      if (kav > 0){
+        var yka = Y(kav, kmax);
+        s.push('<line x1="'+ml+'" y1="'+yka.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+yka.toFixed(1)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(yka-4).toFixed(1)+'" class="avglab" fill="#f59e0b">键去零平均 '+fmt1(kav)+'</text>');
+      }
+    }
     for (i = 0; i < n; i++){
       var x2 = X(i);
       var at = 'data-label="'+fTipD(pts[i][0], bw)+'" data-w="'+fmtN(pts[i][1])+'" data-k="'+fmtN(pts[i][2])+'"';
@@ -624,7 +718,8 @@ $CHART_JS = @'
     svg.style.width = W + 'px'; svg.style.height = H + 'px';
     svg.innerHTML = s.join('');
     var lbl = document.getElementById('dDensityLabel');
-    if (lbl) lbl.textContent = ('每点 ' + bw + ' 天 · 共 ' + n + ' 点 · 默认显示最右侧（最近数据）');
+    if (lbl) lbl.textContent = ('每点 ' + bw + ' 天 · 共 ' + n + ' 点 · 最高'
+      + fmtN(mw) + '字（' + fDate(pts[iw][0]) + '），' + fmtN(mk) + '键（' + fDate(pts[ik][0]) + '）');
     scrollChartsRight();
   }
 
@@ -646,6 +741,17 @@ $CHART_JS = @'
     renderDayAgg(v);
   }
 
+  // 每日图的去零平均线：静态 SVG 里默认隐藏（display:none），勾选框切换显示
+  function toggleDayAvg(){
+    var chk = document.getElementById('dayAvgChk');
+    var svg = document.getElementById('daysvg');
+    if (!chk || !svg) return;
+    var els = svg.querySelectorAll('.avgline');
+    for (var ti = 0; ti < els.length; ti++){
+      els[ti].style.display = chk.checked ? '' : 'none';
+    }
+  }
+
   function bindCtl(inpId, btnId, fn){
     var inp = document.getElementById(inpId);
     var btn = document.getElementById(btnId);
@@ -661,6 +767,15 @@ $CHART_JS = @'
   try {
     bindCtl('bmInput', 'bmApply', applyBm);
     bindCtl('dInput', 'dApply', applyDagg);
+    // 勾选框：去零平均线（每日/按天聚合/按分钟聚合）、分钟级「删去0值」
+    var dz0 = document.getElementById('minDropZero');
+    if (dz0) dz0.addEventListener('change', applyBm);
+    var ma0 = document.getElementById('mAvgChk');
+    if (ma0) ma0.addEventListener('change', applyBm);
+    var da0 = document.getElementById('dAvgChk');
+    if (da0) da0.addEventListener('change', applyDagg);
+    var ya0 = document.getElementById('dayAvgChk');
+    if (ya0){ ya0.addEventListener('change', toggleDayAvg); toggleDayAvg(); }
     // update the fixed bottom-left date badge on scroll / resize
     var sc0 = document.getElementById('minScroll');
     if (sc0) sc0.addEventListener('scroll', updateDateFix);
@@ -696,16 +811,22 @@ function New-Card([string]$k, [string]$v, [string]$note) {
   return '<div class="card"><div class="k">' + [System.Net.WebUtility]::HtmlEncode($k) + '</div><div class="v">' + $v + $nh + '</div></div>'
 }
 
-function New-Pane([string]$name, [string]$label, $items, [string]$extra) {
+function New-Pane([string]$name, [string]$label, $items, [string]$extra, [switch]$withAvg, [string]$avgChkId) {
   if ($items.Count -gt 0) {
-    $body = '<div class="panel">' + (Build-Svg $items) + '</div>'
+    $svg = Build-Svg $items -withAvg:$withAvg
+    if ($avgChkId) { $svg = $svg.Replace('<svg class="chart"', '<svg id="daysvg" class="chart"') }
+    $body = '<div class="panel">' + $svg + '</div>'
   } else {
     $body = '<div class="panel"><div class="empty"><p><strong>暂无' + $label + '数据</strong></p><p>开始用小狼毫打字后自动记录；按天/按分钟聚合来自 <code>input_count_raw.txt</code>。</p></div></div>'
+  }
+  $avgctl = ''
+  if ($avgChkId) {
+    $avgctl = '<label class="chk"><input type="checkbox" id="' + $avgChkId + '"> 显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）</label>'
   }
   $note = '<div class="note">' + $label + ' 共 ' + $items.Count + ' 个数据点'
   if ($extra) { $note += ('；' + $extra) }
   $note += '</div>'
-  return '<div class="pane pane-' + $name + '">' + $body + $note + '</div>'
+  return '<div class="pane pane-' + $name + '">' + $body + $avgctl + $note + '</div>'
 }
 
 function Synthesize-Demo {
@@ -767,25 +888,23 @@ try {
   }
 
   $cards = New-Object System.Collections.Generic.List[string]
-  $cards.Add((New-Card '累计上屏' (Fmt $tw) '字'))
-  $cards.Add((New-Card '累计按键' (Fmt $tk) '键'))
-  $cards.Add((New-Card '记录天数' (Fmt $dayMap.Count) '天'))
   $todayKey = (Get-Date).ToString('yyyyMMdd')
   if ($dayMap.ContainsKey($todayKey)) {
     $cards.Add((New-Card '今日' ((Fmt $dayMap[$todayKey][0]) + ' <small>字 / ' + (Fmt $dayMap[$todayKey][1]) + ' 键</small>') ''))
   } else {
     $cards.Add((New-Card '今日' '<small>尚未记录</small>' ''))
   }
+  $cards.Add((New-Card '记录天数' (Fmt $dayMap.Count) '天'))
+  $cards.Add((New-Card '累计上屏' (Fmt $tw) '字'))
+  $cards.Add((New-Card '累计按键' (Fmt $tk) '键'))
   if ($dayObs.Count -gt 0) {
-    $peak = ($dayObs | Sort-Object W -Descending | Select-Object -First 1)
-    $avg = ($dayObs | Measure-Object -Property W -Average).Average
-    $peakKey = $peak.Key
-    $peakLab = '{0}-{1}' -f $peakKey.Substring(4,2), $peakKey.Substring(6,2)
-    $cards.Add((New-Card '单日最高' (Fmt $peak.W) ('字 · ' + $peakLab)))
-    $cards.Add((New-Card '日均上屏' (Fmt $avg) '字'))
+    $avgW = ($dayObs | Measure-Object -Property W -Average).Average
+    $avgK = ($dayObs | Measure-Object -Property K -Average).Average
+    $cards.Add((New-Card '日均上屏' (Fmt $avgW) '字'))
+    $cards.Add((New-Card '日均按键' (Fmt $avgK) '键'))
   } else {
-    $cards.Add((New-Card '单日最高' '<small>—</small>' ''))
     $cards.Add((New-Card '日均上屏' '<small>—</small>' ''))
+    $cards.Add((New-Card '日均按键' '<small>—</small>' ''))
   }
   $cards.Add((New-Card '分钟级记录' (Fmt $minutes.Count) '条'))
 
@@ -811,7 +930,7 @@ try {
   $parts.Add('<input type="radio" name="scale" id="s-dagg">')
   $parts.Add('<input type="radio" name="scale" id="s-min">')
   $parts.Add('<div class="tabbar"><label for="s-day">每日</label><label for="s-dagg">按天聚合</label><label for="s-min">按分钟聚合</label></div>')
-  $parts.Add((New-Pane 'day' '每日' $dayItems '以日汇总为准，与 ii 弹窗一致'))
+  $parts.Add((New-Pane 'day' '每日' $dayItems '以日汇总为准，与 ii 弹窗一致' -withAvg -avgChkId 'dayAvgChk'))
   # 按天聚合面板：可滚动 + 组距可输入（JS 渲染；无 JS 时按 1 天静态 SVG 兜底）
   $dbody = New-Object System.Collections.Generic.List[string]
   $dbody.Add('<div class="minctl">')
@@ -835,6 +954,7 @@ try {
   $dbody.Add('<div class="yax yax-l" id="yaxL2"></div>')
   $dbody.Add('<div class="yax yax-r" id="yaxR2"></div>')
   $dbody.Add('</div>')
+  $dbody.Add('<label class="chk"><input type="checkbox" id="dAvgChk"> 显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）</label>')
   $dbody.Add('<div class="scroll-hint">默认每点 1 天并定位至最近的数据；向左滚动查看更早的数据。左右两侧纵轴刻度始终固定显示（左轴=字、右轴=键）；横轴标出每点的起始日期，悬停数据点看该组覆盖的日期范围与数值。</div>')
   $dbody.Add('<div class="note">由 <code>input_count_raw.txt</code> 按天聚合；在上方下拉框选 1/2/3/7/14/30/90/180/365，或直接输入 1–365 的任意天数后回车/点「绘图」。</div>')
   $parts.Add('<div class="pane pane-dagg">' + ($dbody -join '') + '</div>')
@@ -867,6 +987,8 @@ try {
   $mbody.Add('<div class="yax yax-r" id="yaxR"></div>')
   $mbody.Add('<div class="datefix" id="dateFix"></div>')
   $mbody.Add('</div>')
+  $mbody.Add('<label class="chk"><input type="checkbox" id="mAvgChk"> 显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）</label>')
+  $mbody.Add('<label class="chk"><input type="checkbox" id="minDropZero"> 删去0值（勾选后分钟级图表不绘制 0 值点，只把不为 0 的数据按时间顺序绘制出来；横轴时刻刻度与日期标注随之只标剩余的数据点）</label>')
   $mbody.Add('<div class="scroll-hint">默认按 1 分钟绘图并显示最右侧（最近的数据）；向左拖动/滚动查看更早的数据；左右两侧纵轴始终固定显示，不随滚动移动。日期标注在每天 0:00 数据点的正下方（覆盖该点以右当天的数据）；滚动到看不到 0:00 时，当前日期固定显示在左下角（左侧纵轴下方）。</div>')
   $mbody.Add('<div class="note">由 <code>input_count_raw.txt</code> 聚合；在上方下拉框选 1/5/10/15/30/60/120/360/720/1440，或直接输入 1–1440 的任意分钟数后回车/点「绘图」。</div>')
   $parts.Add('<div class="pane pane-min">' + ($mbody -join '') + '</div>')

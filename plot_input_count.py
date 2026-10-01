@@ -53,6 +53,24 @@ def fmt(n):
         return str(n)
 
 
+def fmt1(x):
+    """保留 1 位小数、千分位（去零平均线的数值标注）。"""
+    try:
+        return "{:,.1f}".format(float(x))
+    except (TypeError, ValueError):
+        return str(x)
+
+
+def avg_nonzero(points):
+    """去零平均值：上屏字数、按键次数各自剔除 0 值后求平均（无非零值时返回 0）。"""
+    ws = [p[1] for p in points if p[1] > 0]
+    ks = [p[2] for p in points if p[2] > 0]
+    return (
+        (sum(ws) / float(len(ws))) if ws else 0.0,
+        (sum(ks) / float(len(ks))) if ks else 0.0,
+    )
+
+
 def nice_max(value):
     try:
         value = float(value)
@@ -216,12 +234,13 @@ def label_stride(labels, dx, gap=12.0):
     return max(1, int(math.ceil((max_w + gap) / dx)))
 
 
-def build_svg(points, label_fn, time_fn, date_fn=None):
+def build_svg(points, label_fn, time_fn, date_fn=None, avg=False):
     """双纵轴折线图 SVG。points: [(key, w, k)]。含可视点 + 悬停命中区（JS 提示框）。
 
     date_fn 可选：返回非空字符串的点视为「新的一天 0:00」，在其正下方标注日期
     （该日期覆盖此点以右的数据），并画一条浅色日分隔线。
     横轴时刻刻度按实际文本宽度自动定步长，任何组距都绝不重叠。
+    avg=True 时绘制「去零平均线」（字=蓝虚线、键=橙虚线，默认隐藏，由勾选框切换）。
     """
     n = len(points)
     width, height = 1000, 430
@@ -317,6 +336,32 @@ def build_svg(points, label_fn, time_fn, date_fn=None):
             '<circle cx="%.1f" cy="%.1f" r="3.2" fill="%s"/>'
             % (x, y_at(w, wmax), COLOR_WORDS)
         )
+
+    # 去零平均线（字=蓝虚线、键=橙虚线，默认 display:none，由勾选框显示/隐藏）
+    if avg and n:
+        avg_w, avg_k = avg_nonzero(points)
+        if avg_w > 0:
+            y = y_at(avg_w, wmax)
+            out.append(
+                '<line class="avgline" style="display:none" x1="%d" y1="%.1f" x2="%d" y2="%.1f" '
+                'stroke="%s" stroke-width="1.5" stroke-dasharray="3 3"/>'
+                % (ml, y, ml + pw, y, COLOR_WORDS)
+            )
+            out.append(
+                '<text class="avglab avgline" style="display:none" x="%d" y="%.1f" fill="%s">字去零平均 %s</text>'
+                % (ml + 8, y - 4, COLOR_WORDS, fmt1(avg_w))
+            )
+        if avg_k > 0:
+            y = y_at(avg_k, kmax)
+            out.append(
+                '<line class="avgline" style="display:none" x1="%d" y1="%.1f" x2="%d" y2="%.1f" '
+                'stroke="%s" stroke-width="1.5" stroke-dasharray="3 3"/>'
+                % (ml, y, ml + pw, y, COLOR_KEYS)
+            )
+            out.append(
+                '<text class="avglab avgline" style="display:none" x="%d" y="%.1f" fill="%s">键去零平均 %s</text>'
+                % (ml + 8, y - 4, COLOR_KEYS, fmt1(avg_k))
+            )
 
     # 悬停命中区（透明大圆，带数据，供 JS 提示框显示）
     for i, (key, w, k) in enumerate(points):
@@ -438,6 +483,10 @@ circle.hit { fill: rgba(0,0,0,0); pointer-events: all; cursor: pointer; }
   box-shadow: 0 1px 3px rgba(0,0,0,0.10); }
 #minsvg, #dagsvg { display: block; }
 .scroll-hint { color: #9ca3af; font-size: 12px; margin-top: 6px; }
+.chk { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #374151;
+  margin-top: 8px; cursor: pointer; user-select: none; }
+.chk input { width: 15px; height: 15px; accent-color: #2563eb; cursor: pointer; }
+.avglab { font-size: 10px; }
 .tooltip { position: fixed; z-index: 100; display: none; background: #1f2937; color: #f9fafb;
   padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.7;
   box-shadow: 0 6px 20px rgba(0,0,0,0.28); pointer-events: none; white-space: nowrap; }
@@ -481,6 +530,14 @@ CHART_JS = """
 
   function pad(n){ return (n < 10 ? '0' : '') + n; }
   function fmtN(n){ return Number(n).toLocaleString(); }
+  function fmt1(x){ return Number(x).toLocaleString(undefined, {maximumFractionDigits: 1}); }
+  function chkOn(id){ var c = document.getElementById(id); return !!(c && c.checked); }
+  // 去零平均：上屏字数、按键次数各自剔除 0 值后求平均（无非零值返回 0）
+  function avgNZ(pts, idx){
+    var s = 0, c = 0;
+    for (var ai = 0; ai < pts.length; ai++){ if (pts[ai][idx] > 0){ s += pts[ai][idx]; c++; } }
+    return c ? s / c : 0;
+  }
   function niceMax(v){ v = +v; if (v <= 0) return 10;
     var e = Math.floor(Math.log(v) / Math.LN10); var base = Math.pow(10, e);
     var m = [1,2,5,10];
@@ -587,14 +644,28 @@ CHART_JS = """
       var dn2 = Math.floor(b2 / perDay), slot2 = b2 - dn2 * perDay;
       pts.push([new Date(dayStartMs(dn2) + slot2 * bms), v[0], v[1]]);
     }
+    // 「删去0值」勾选框：勾选后不绘制 0 值点（字、键均为 0 的点），
+    // 只把不为 0 的数据按时间顺序绘制出来，横轴时刻刻度/日期标注随之只标剩余的点。
+    var dz = chkOn('minDropZero');
+    if (dz){
+      var fz = [];
+      for (i = 0; i < pts.length; i++){
+        if (pts[i][1] !== 0 || pts[i][2] !== 0) fz.push(pts[i]);
+      }
+      pts = fz;
+    }
+    if (!pts.length){ svg.innerHTML = ''; MIN_PTS = null; updateDateFix(); return; }
     var n = pts.length;
     var SP = 9, H = 430, ml = 78, mr = 78, mt = 58, mb = 64;
     // 宽度至少填满滚动容器可见区，保证左右固定纵轴贴着图表两侧
     var cw = (svg.parentNode && svg.parentNode.clientWidth) ? svg.parentNode.clientWidth : 0;
     var W = Math.max(n * SP + ml + mr, cw, 360);
     var pw = W - ml - mr, ph = H - mt - mb;
-    var mw = 0, mk = 0;
-    for (i = 0; i < n; i++){ if (pts[i][1] > mw) mw = pts[i][1]; if (pts[i][2] > mk) mk = pts[i][2]; }
+    var mw = 0, mk = 0, iw = 0, ik = 0;
+    for (i = 0; i < n; i++){
+      if (pts[i][1] > mw){ mw = pts[i][1]; iw = i; }
+      if (pts[i][2] > mk){ mk = pts[i][2]; ik = i; }
+    }
     var wmax = niceMax(mw), kmax = niceMax(mk);
     function X(j){ return ml + (n <= 1 ? pw * 0.5 : pw * j / (n - 1)); }
     function Y(v, vm){ return mt + ph * (1 - v / vm); }
@@ -614,11 +685,16 @@ CHART_JS = """
     if (boxR) boxR.innerHTML = yr.join('');
     s.push('<line x1="'+ml+'" y1="'+(mt+ph)+'" x2="'+(ml+pw)+'" y2="'+(mt+ph)+'" stroke="#9ca3af" stroke-width="1.2"/>');
     // 日分隔线 + 日期标注：日期画在每天 0:00 数据点的正下方（= 此点以右当天数据的日期）
-    var bidx = {};
+    var bidx = {}, lastDay = '';
     for (i = 0; i < n; i++){
       var dd = pts[i][0];
-      if (dd.getHours() === 0 && dd.getMinutes() === 0){
-        var x3 = X(i), ds3 = fDate(dd);
+      var ds3 = fDate(dd);
+      // 正常：日期标在每天 0:00 的点正下方；「删去0值」勾选后 0 点可能被删，
+      // 改为标在每天第一个剩下的数据点正下方（横轴标注随删 0 后的数据自动跟随）
+      var mark = dz ? (ds3 !== lastDay) : (dd.getHours() === 0 && dd.getMinutes() === 0);
+      lastDay = ds3;
+      if (mark){
+        var x3 = X(i);
         s.push('<line x1="'+x3.toFixed(1)+'" y1="'+mt+'" x2="'+x3.toFixed(1)+'" y2="'+(mt+ph)+'" stroke="#d1d5db" stroke-width="1" stroke-dasharray="3 4"/>');
         s.push('<text x="'+x3.toFixed(1)+'" y="'+(mt+ph+42)+'" class="xl xd" text-anchor="middle">'+ds3+'</text>');
         bidx[ds3] = i;
@@ -627,7 +703,10 @@ CHART_JS = """
     // 时刻刻度：步长由实际文本宽度与点距决定，任何组距都不重叠
     var dxp = (n > 1) ? pw / (n - 1) : pw;
     var labW = Math.max(textW('00:00'), textW('12:34'), textW('23:59'));
-    var stride = pickStride(Math.max(1, Math.ceil((labW + 12) / dxp)), bm);
+    // 删 0 后点的时间不再等间隔，时刻标注直接按屏幕空间取步长（标注取自各点真实时间）
+    var stride = dz
+      ? Math.max(1, Math.ceil((labW + 12) / (dxp || 1)))
+      : pickStride(Math.max(1, Math.ceil((labW + 12) / dxp)), bm);
     if (stride > n) stride = n;
     for (i = 0; i < n; i += stride){
       s.push('<text x="'+X(i).toFixed(1)+'" y="'+(mt+ph+22)+'" class="xl" text-anchor="middle">'+fLabel(pts[i][0])+'</text>');
@@ -641,6 +720,20 @@ CHART_JS = """
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][2], kmax).toFixed(1)+'" r="3.2" fill="#f59e0b"/>');
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][1], wmax).toFixed(1)+'" r="3.2" fill="#2563eb"/>');
     }
+    // 去零平均线（勾选后显示）：字=蓝虚线（左轴高度）、键=橙虚线（右轴高度）
+    if (chkOn('mAvgChk')){
+      var wav = avgNZ(pts, 1), kav = avgNZ(pts, 2);
+      if (wav > 0){
+        var ywa = Y(wav, wmax);
+        s.push('<line x1="'+ml+'" y1="'+ywa.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+ywa.toFixed(1)+'" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(ywa-4).toFixed(1)+'" class="avglab" fill="#2563eb">字去零平均 '+fmt1(wav)+'</text>');
+      }
+      if (kav > 0){
+        var yka = Y(kav, kmax);
+        s.push('<line x1="'+ml+'" y1="'+yka.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+yka.toFixed(1)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(yka-4).toFixed(1)+'" class="avglab" fill="#f59e0b">键去零平均 '+fmt1(kav)+'</text>');
+      }
+    }
     for (i = 0; i < n; i++){
       var x2 = X(i);
       var at = 'data-label="'+fTip(pts[i][0])+'" data-w="'+fmtN(pts[i][1])+'" data-k="'+fmtN(pts[i][2])+'"';
@@ -652,7 +745,8 @@ CHART_JS = """
     svg.style.width = W + 'px'; svg.style.height = H + 'px';
     svg.innerHTML = s.join('');
     var lbl = document.getElementById('minDensityLabel');
-    if (lbl) lbl.textContent = ('每点 ' + bm + ' 分钟 · 共 ' + n + ' 点 · 默认显示最右侧（最近数据）');
+    if (lbl) lbl.textContent = ('每点 ' + bm + ' 分钟 · 共 ' + n + ' 点 · 最高'
+      + fmtN(mw) + '字（' + fTip(pts[iw][0]) + '），' + fmtN(mk) + '键（' + fTip(pts[ik][0]) + '）');
     // 供滚动时更新左下角固定日期用
     MIN_N = n; MIN_DX = dxp; MIN_X0 = ml; MIN_PWD = pw; MIN_PTS = pts; MIN_BIDX = bidx;
     // 每次重绘（含切换 1 分钟/…/1440 分钟组距）后都回到最右侧
@@ -704,8 +798,11 @@ CHART_JS = """
     var cw = (svg.parentNode && svg.parentNode.clientWidth) ? svg.parentNode.clientWidth : 0;
     var W = Math.max(n * SP + ml + mr, cw, 360);
     var pw = W - ml - mr, ph = H - mt - mb;
-    var mw = 0, mk = 0;
-    for (i = 0; i < n; i++){ if (pts[i][1] > mw) mw = pts[i][1]; if (pts[i][2] > mk) mk = pts[i][2]; }
+    var mw = 0, mk = 0, iw = 0, ik = 0;
+    for (i = 0; i < n; i++){
+      if (pts[i][1] > mw){ mw = pts[i][1]; iw = i; }
+      if (pts[i][2] > mk){ mk = pts[i][2]; ik = i; }
+    }
     var wmax = niceMax(mw), kmax = niceMax(mk);
     function X(j){ return ml + (n <= 1 ? pw * 0.5 : pw * j / (n - 1)); }
     function Y(v, vm){ return mt + ph * (1 - v / vm); }
@@ -741,6 +838,20 @@ CHART_JS = """
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][2], kmax).toFixed(1)+'" r="3.2" fill="#f59e0b"/>');
       s.push('<circle cx="'+x.toFixed(1)+'" cy="'+Y(pts[i][1], wmax).toFixed(1)+'" r="3.2" fill="#2563eb"/>');
     }
+    // 去零平均线（勾选后显示）：字=蓝虚线（左轴高度）、键=橙虚线（右轴高度）
+    if (chkOn('dAvgChk')){
+      var wav = avgNZ(pts, 1), kav = avgNZ(pts, 2);
+      if (wav > 0){
+        var ywa = Y(wav, wmax);
+        s.push('<line x1="'+ml+'" y1="'+ywa.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+ywa.toFixed(1)+'" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(ywa-4).toFixed(1)+'" class="avglab" fill="#2563eb">字去零平均 '+fmt1(wav)+'</text>');
+      }
+      if (kav > 0){
+        var yka = Y(kav, kmax);
+        s.push('<line x1="'+ml+'" y1="'+yka.toFixed(1)+'" x2="'+(ml+pw)+'" y2="'+yka.toFixed(1)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3 3"/>');
+        s.push('<text x="'+(ml+8)+'" y="'+(yka-4).toFixed(1)+'" class="avglab" fill="#f59e0b">键去零平均 '+fmt1(kav)+'</text>');
+      }
+    }
     for (i = 0; i < n; i++){
       var x2 = X(i);
       var at = 'data-label="'+fTipD(pts[i][0], bw)+'" data-w="'+fmtN(pts[i][1])+'" data-k="'+fmtN(pts[i][2])+'"';
@@ -752,7 +863,8 @@ CHART_JS = """
     svg.style.width = W + 'px'; svg.style.height = H + 'px';
     svg.innerHTML = s.join('');
     var lbl = document.getElementById('dDensityLabel');
-    if (lbl) lbl.textContent = ('每点 ' + bw + ' 天 · 共 ' + n + ' 点 · 默认显示最右侧（最近数据）');
+    if (lbl) lbl.textContent = ('每点 ' + bw + ' 天 · 共 ' + n + ' 点 · 最高'
+      + fmtN(mw) + '字（' + fDate(pts[iw][0]) + '），' + fmtN(mk) + '键（' + fDate(pts[ik][0]) + '）');
     scrollChartsRight();
   }
 
@@ -774,6 +886,17 @@ CHART_JS = """
     renderDayAgg(v);
   }
 
+  // 每日图的去零平均线：静态 SVG 里默认隐藏（display:none），勾选框切换显示
+  function toggleDayAvg(){
+    var chk = document.getElementById('dayAvgChk');
+    var svg = document.getElementById('daysvg');
+    if (!chk || !svg) return;
+    var els = svg.querySelectorAll('.avgline');
+    for (var ti = 0; ti < els.length; ti++){
+      els[ti].style.display = chk.checked ? '' : 'none';
+    }
+  }
+
   function bindCtl(inpId, btnId, fn){
     var inp = document.getElementById(inpId);
     var btn = document.getElementById(btnId);
@@ -789,6 +912,15 @@ CHART_JS = """
   try {
     bindCtl('bmInput', 'bmApply', applyBm);
     bindCtl('dInput', 'dApply', applyDagg);
+    // 勾选框：去零平均线（每日/按天聚合/按分钟聚合）、分钟级「删去0值」
+    var dz0 = document.getElementById('minDropZero');
+    if (dz0) dz0.addEventListener('change', applyBm);
+    var ma0 = document.getElementById('mAvgChk');
+    if (ma0) ma0.addEventListener('change', applyBm);
+    var da0 = document.getElementById('dAvgChk');
+    if (da0) da0.addEventListener('change', applyDagg);
+    var ya0 = document.getElementById('dayAvgChk');
+    if (ya0){ ya0.addEventListener('change', toggleDayAvg); toggleDayAvg(); }
     // 横向滚动/窗口尺寸变化时，同步更新左下角固定的日期标注
     var sc0 = document.getElementById('minScroll');
     if (sc0) sc0.addEventListener('scroll', updateDateFix);
@@ -828,9 +960,13 @@ def card(key, value, note=""):
     )
 
 
-def pane_html(scale_name, scale_label, points, label_fn, time_fn, extra_note=""):
+def pane_html(scale_name, scale_label, points, label_fn, time_fn, extra_note="",
+              avg=False, avg_chk_id=""):
     if points:
-        body = '<div class="panel">%s</div>' % build_svg(points, label_fn, time_fn)
+        svg = build_svg(points, label_fn, time_fn, avg=avg)
+        if avg_chk_id:
+            svg = svg.replace('<svg class="chart"', '<svg id="daysvg" class="chart"', 1)
+        body = '<div class="panel">%s</div>' % svg
     else:
         body = (
             '<div class="panel"><div class="empty">'
@@ -838,11 +974,18 @@ def pane_html(scale_name, scale_label, points, label_fn, time_fn, extra_note="")
             "<p>开始用小狼毫打字后自动记录；按天/按分钟聚合来自 "
             "<code>input_count_raw.txt</code>。</p></div></div>" % scale_label
         )
+    avgctl = ""
+    if avg_chk_id:
+        avgctl = (
+            '<label class="chk"><input type="checkbox" id="%s"> '
+            "显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）"
+            "</label>" % avg_chk_id
+        )
     note = (
         '<div class="note">%s 共 %d 个数据点%s</div>'
         % (scale_label, len(points), ("；" + extra_note) if extra_note else "")
     )
-    return '<div class="pane pane-%s">%s%s</div>' % (scale_name, body, note)
+    return '<div class="pane pane-%s">%s%s%s</div>' % (scale_name, body, avgctl, note)
 
 
 def build_html(data, generated_at, summary_path, raw_path, demo=False):
@@ -884,9 +1027,6 @@ def build_html(data, generated_at, summary_path, raw_path, demo=False):
     day_obs = [(k, day_map[k][0], day_map[k][1]) for k in sorted(day_map)]
 
     cards = []
-    cards.append(card("累计上屏", fmt(data["total_words"]), "字"))
-    cards.append(card("累计按键", fmt(data["total_keys"]), "键"))
-    cards.append(card("记录天数", fmt(len(day_map)), "天"))
     today = datetime.date.today().strftime("%Y%m%d")
     if today in day_map:
         cards.append(
@@ -898,14 +1038,17 @@ def build_html(data, generated_at, summary_path, raw_path, demo=False):
         )
     else:
         cards.append(card("今日", "<small>尚未记录</small>"))
+    cards.append(card("记录天数", fmt(len(day_map)), "天"))
+    cards.append(card("累计上屏", fmt(data["total_words"]), "字"))
+    cards.append(card("累计按键", fmt(data["total_keys"]), "键"))
     if day_obs:
-        peak = max(day_obs, key=lambda p: p[1])
-        avg = sum(p[1] for p in day_obs) / float(len(day_obs))
-        cards.append(card("单日最高", fmt(peak[1]), "字 · " + lab_day(peak[0])))
-        cards.append(card("日均上屏", fmt(avg), "字"))
+        avg_w = sum(p[1] for p in day_obs) / float(len(day_obs))
+        avg_k = sum(p[2] for p in day_obs) / float(len(day_obs))
+        cards.append(card("日均上屏", fmt(avg_w), "字"))
+        cards.append(card("日均按键", fmt(avg_k), "键"))
     else:
-        cards.append(card("单日最高", "<small>—</small>"))
         cards.append(card("日均上屏", "<small>—</small>"))
+        cards.append(card("日均按键", "<small>—</small>"))
     cards.append(card("分钟级记录", fmt(len(minutes)), "条"))
     parts.append('<div class="cards">%s</div>' % "".join(cards))
 
@@ -918,7 +1061,8 @@ def build_html(data, generated_at, summary_path, raw_path, demo=False):
     parts.append('<label for="s-dagg">按天聚合</label>')
     parts.append('<label for="s-min">按分钟聚合</label>')
     parts.append("</div>")
-    parts.append(pane_html("day", "每日", day_points, lab_day, time_day, "ii 弹窗亦可查看"))
+    parts.append(pane_html("day", "每日", day_points, lab_day, time_day,
+                           "ii 弹窗亦可查看", avg=True, avg_chk_id="dayAvgChk"))
 
     # 按天聚合面板：可滚动 + 组距可输入（JS 渲染；无 JS 时按 1 天静态 SVG 兜底）
     min_raw = json.dumps(
@@ -950,6 +1094,10 @@ def build_html(data, generated_at, summary_path, raw_path, demo=False):
     dagbody.append('<div class="yax yax-l" id="yaxL2"></div>')
     dagbody.append('<div class="yax yax-r" id="yaxR2"></div>')
     dagbody.append("</div>")
+    dagbody.append(
+        '<label class="chk"><input type="checkbox" id="dAvgChk"> '
+        "显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）</label>"
+    )
     dagbody.append(
         '<div class="scroll-hint">默认每点 1 天并定位至最近的数据；向左滚动查看更早的数据。'
         "左右两侧纵轴刻度始终固定显示（左轴=字、右轴=键）；横轴标出每点的起始日期，"
@@ -990,6 +1138,15 @@ def build_html(data, generated_at, summary_path, raw_path, demo=False):
     mbody.append('<div class="yax yax-r" id="yaxR"></div>')
     mbody.append('<div class="datefix" id="dateFix"></div>')
     mbody.append("</div>")
+    mbody.append(
+        '<label class="chk"><input type="checkbox" id="mAvgChk"> '
+        "显示去零平均线（字=蓝色虚线、键=橙色虚线，字、键各自剔除 0 值后求平均）</label>"
+    )
+    mbody.append(
+        '<label class="chk"><input type="checkbox" id="minDropZero"> '
+        "删去0值（勾选后分钟级图表不绘制 0 值点，只把不为 0 的数据按时间顺序绘制出来；"
+        "横轴时刻刻度与日期标注随之只标剩余的数据点）</label>"
+    )
     mbody.append(
         '<div class="scroll-hint">默认按 1 分钟绘图并定位至最近的数据；向左滚动查看更早的数据。'
         "日期标注在每天 0:00 数据点的正下方（覆盖该点以右当天的数据）；"
