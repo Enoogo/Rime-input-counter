@@ -1,0 +1,75 @@
+========================================================================
+ 文件整理 / 还原清单（RESTORE_MANIFEST）
+ 整理时间：2026-09-27（第二次整理，替代 2026-09-25 版）
+ 工作目录：D:\MiniPrograms\RimeData （小狼毫用户文件夹）
+========================================================================
+
+【一键还原】
+  双击根目录的  restore_layout.bat
+  （等价于运行 Rime-input-count\restore_layout.ps1）
+  它会：把下面所有移动过的文件移回根目录 → 还原 lua\input_count.lua、README.md
+        的整理前备份 → 重启 WeaselServer 使还原后的 lua 生效。
+  还原完成后可自行删除 restore_layout.bat 和 Rime-input-count\restore_* 文件。
+
+【一、留在根目录不动的文件】（Rime 运行必需，动了输入法/统计就坏）
+  default.custom.yaml      配置补丁（方案列表/候选页设置）
+  weasel.custom.yaml       小狼毫外观补丁
+  luna_pinyin_simp.custom.yaml  方案补丁（挂载输入统计 lua_translator）
+  rime.lua                 librime-lua 总入口
+  lua\input_count.lua      统计核心（Rime 只从用户目录 lua\ 下加载，必须留根目录）
+  installation.yaml        安装信息（Rime 自动维护）
+  user.yaml                用户状态（Rime 自动维护）
+  build\                   部署缓存（Rime 自动生成）
+  luna_pinyin.userdb\      用户词典（Rime 自动维护）
+  sync\                    同步快照（Rime 自动维护）
+  快捷键和功能说明.txt        与字数统计无关，留在根目录
+
+【二、移动到 Rime-input-count\ 的文件】（字数统计相关，全部）
+  plot_input_count.py      折线图生成器（Python 版，主用）
+  chart_powershell.ps1     折线图生成器（PowerShell 备用版）
+  查看每日统计.bat           一键出图入口
+  input_count.txt          每日输入统计数据 ★数据文件★
+  input_count_raw.txt      分钟级原始数据 ★数据文件★
+  input_count_raw.tmp      当前分钟流水 ★数据文件★
+  sample_input_count.txt   示例数据
+  input_count_chart.html   图表输出（真实数据）
+  demo_chart.html          示例演示图
+  README.md                本套统计功能的说明文档
+  setup_and_verify.ps1     一次性安装+验证脚本（历史）
+  finalize.ps1             一次性收尾脚本（历史）
+  redeploy.ps1 / redeploy2.ps1   一次性重新部署排障脚本（历史）
+  SETUP_RESULT.txt / FINALIZE_RESULT.txt / REDEPLOY_RESULT.txt  历史报告
+  RESTORE_MANIFEST.txt / restore_layout.ps1 / restore_backup\   还原用
+
+【三、本次对文件内容的修改】
+  1. lua\input_count.lua：db_path / raw_path / raw_path_tmp 三条数据路径
+       由 D:\MiniPrograms\RimeData\input_count*.txt
+       改为 D:\MiniPrograms\RimeData\Rime-input-count\input_count*.txt
+     （原因：数据文件随统计工具一起移入 Rime-input-count\，
+       路径必须同步，否则统计会另起新文件、数据分裂）
+     原始备份：Rime-input-count\restore_backup\input_count.lua
+     （还原脚本会用备份覆盖回去）
+  2. plot_input_count.py / chart_powershell.ps1：图表脚本新增
+     「初始显示位置 = 最右侧（最近的数据）」逻辑（scrollChartsRight）：
+     打开页面、切换每日/每小时/每分钟标签页、切换 1 分钟~1 小时密度后，
+     横向滚动的图表都自动定位到最右侧（最新数据）。
+     （还原脚本不会撤销此项——这是期望保留的行为改进）
+  3. chart_powershell.ps1：删除一行重复的「每小时」面板（原为复制粘贴重复）。
+  4. README.md：补充目录布局与新行为说明。
+     原始备份：Rime-input-count\restore_backup\README.md
+     （还原脚本会用备份覆盖回去）
+  （除此之外所有文件均为“原样移动”，内容零改动）
+
+【四、移动后为什么功能不受影响】
+  - 查看每日统计.bat / plot_input_count.py / chart_powershell.ps1
+    全部用“自身所在目录”定位输入输出（%~dp0 / BASE_DIR / $PSScriptRoot），
+    整套工具一起平移到 Rime-input-count\ 后相对关系不变，无需改代码。
+  - Rime 侧只依赖根目录的 rime.lua、lua\、*.custom.yaml，一律未动；
+    唯一的联动改动是 lua\input_count.lua 的三条数据路径（见上），
+    改完已重启 WeaselServer 生效（改 lua 不需要重新部署，重启服务即可）。
+  - 已验证（2026-09-27）：重启后分钟级流水继续写入
+    Rime-input-count\input_count_raw.tmp；每日汇总累计不归零
+    （start_iso / day= 行连续）；根目录不再产生 input_count* 文件。
+
+【五、还原记录】
+  （执行过 restore_layout.bat 后如需记录可追加于此）

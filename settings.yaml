@@ -1,0 +1,9 @@
+# settings.yaml —— Rime-input-count 的功能开关
+# 本文件不是 Rime 配置，是统计工具自己的设定；保存后约 5 秒内生效，无需重新部署。
+# 由 lua\keylog.lua 读取。以后新增的设定也放在这里。
+
+# 按键时间戳记录：把每个按键事件的原始时间戳写入 keylog_ts\YYYYMMDD.txt
+#（只存时间戳、不存按键内容；按键内容仍由 keylog\ 负责，两边第 N 个键/第 N 行一一对应）。
+#   true  = 开启（默认；本文件不存在时也按开启处理）
+#   false = 关闭（不再写新的时间戳，已写好的文件保留不动）
+keylog_timestamp: true

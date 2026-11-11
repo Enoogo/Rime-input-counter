@@ -36,6 +36,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:helper
+rem Start the keylog helper service (chart click/dblclick key-replay backend).
+rem It only listens on 127.0.0.1; if already running the new instance exits silently.
+where pythonw >nul 2>nul
+if not errorlevel 1 (
+    start "" pythonw "%~dp0keylog_helper.py"
+    goto :open
+)
+where pyw >nul 2>nul
+if not errorlevel 1 start "" pyw -3 "%~dp0keylog_helper.py"
+
 :open
 if exist "%~dp0input_count_chart.html" (
     start "" "%~dp0input_count_chart.html"
